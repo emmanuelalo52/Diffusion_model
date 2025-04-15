@@ -1,0 +1,9 @@
+Take note of the following:
+> Token size
+> Model size
+Archtecture:
+> Note to include:
+. Spatial Representation: It encodes the input images into a type that the model understands.
+. Positonal Embedding
+. DiT transformer Block in place of u-net
+
