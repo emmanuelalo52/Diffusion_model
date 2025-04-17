@@ -8,11 +8,7 @@ import math
 class TimestepEmbedder(nn.Module):
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
-            nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
-        )
+        self.mlp = MLP()
         self.frequency_embedding_size = frequency_embedding_size
     @staticmethod
     def timestep_embedding(t, dim, max_period=10000):
@@ -43,7 +39,7 @@ class TimestepEmbedder(nn.Module):
 
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     assert embed_dim % 2 == 0
-    omega = torch.arange(embed_dim // 2, dtype=jnp.float32)
+    omega = torch.arange(embed_dim // 2, dtype=torch.float32)
     omega /= embed_dim / 2.0
     omega = 1.0 / 10000**omega  # (D/2,)
 
@@ -58,24 +54,37 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 
 
 def get_1d_sincos_pos_embed(embed_dim, length):
-    return torch.expand_dims(
-        get_1d_sincos_pos_embed_from_grid(
-            embed_dim, torch.arange(length, dtype=torch.float32)
-        ),
-        0,
-    )
-def get_2d_sincos_pos_embed(embed_dim, length):
+    grid = torch.arange(length, dtype=torch.float32)
+    pos_embed = get_1d_sincos_pos_embed_from_grid(embed_dim, grid)
+    return pos_embed.unsqueeze(0)
+
+def get_2d_sincos_pos_embed(embed_dim, length,interpolation_scale=1.0,base_size=16,device: Optional[torch.device] = None):
     # example: embed_dim = 256, length = 16*16
     grid_size = int(length**0.5)
     assert grid_size * grid_size == length
+    grid_h = (
+        torch.arange(grid_size[0], device=device, dtype=torch.float32)
+        / (grid_size[0] / base_size)
+        / interpolation_scale
+    )
+    grid_w = (
+        torch.arange(grid_size[1], device=device, dtype=torch.float32)
+        / (grid_size[1] / base_size)
+        / interpolation_scale
+    )
+    grid = torch.meshgrid(grid_w, grid_h, indexing="xy")  # here w goes first
+    grid = torch.stack(grid, dim=0)
 
-    def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
-        assert embed_dim % 2 == 0
-        # use half of dimensions to encode grid_h
-        emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
-        emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
-        emb = torch.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
-        return emb
+    grid = grid.reshape([2, 1, grid_size[1], grid_size[0]])
+    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
+
+def get_2d_sincos_pos_embed_from_grid(embed_dim, grid):
+    assert embed_dim % 2 == 0
+    # use half of dimensions to encode grid_h
+    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
+    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
+    emb = torch.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
+    return emb
     
 
 
@@ -126,6 +135,44 @@ class MultiHeadAttention(nn.Module):
     
 
 
+# Patch embedding
+class PatchEmbed():
+    def __init__(self,config, in_channels=4, img_size: int=32, dim=1024, patch_size: int = 2):
+        super().__init__()
+        self.dim = dim
+        self.patch_size = patch_size
+        patch_tuple = (patch_size, patch_size)
+        self.num_patches = (img_size // self.patch_size) ** 2
+        self.proj = nn.Conv2d(
+            in_channels, config.n_emb, kernel_size=(patch_size, patch_size), stride=patch_size, bias=False
+        )
+
+    def forward(self, x):
+        B, H, W, C = x.shape
+        num_patches_side = (H // self.patch_size)
+        x = self.conv_project(x) # (B, P, P, hidden_size)
+        x = x.view(num_patches_side, num_patches_side)
+        return x
+
+
+
+#Multi layer perceptron
+class MLP(nn.Module):
+    def __init__(self,config):
+        super().__init__()
+        self.silu = nn.SiLU()
+        self.ln1 = nn.Linear(config.n_emb,4 * config.n_emb)
+        self.ln2 = nn.Linear(4 * config.n_emb,config.n_emb)
+        self.dropout = nn.Dropout()
+    def forward(self,x):
+        x = self.ln1(x)
+        x = self.silu(x)
+        x = self.dropout(x)
+        x = self.ln2(x)
+        x = self.dropout(x)
+        return x
+
+
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -135,8 +182,6 @@ class DiTBLock(nn.Module):
         self.attn = MultiHeadAttention(config)
         self.layernorm1 = nn.LayerNorm(config.hidden_size,elementwise_affine=False,eps=1e-6)
         self.layernomr2 = nn.LayerNorm(config.hidden_size,elementwise_affine=False,eps=1e-6)
-        self.mlp_hidden_size = config.mlp_hidden_size
-        self.gelu = nn.GELU(approximate="tanh")
         self.mlp = MLP()
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
