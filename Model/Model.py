@@ -24,6 +24,61 @@ class DiTConfig:
     attn_dropout: float = 0.1
 
 
+
+
+def get_1d_sincos_pos_embed_from_grid(config, pos):
+    assert config.n_emb % 2 == 0
+    omega = torch.arange(config.n_emb // 2, dtype=torch.float32)
+    omega /= config.n_emb / 2.0
+    omega = 1.0 / 10000**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
+
+    emb_sin = torch.sin(out)  # (M, D/2)
+    emb_cos = torch.cos(out)  # (M, D/2)
+
+    emb = torch.cat([emb_sin, emb_cos], dim=1)
+    return emb
+
+
+def get_1d_sincos_pos_embed(config, length):
+    grid = torch.arange(length, dtype=torch.float32)
+    pos_embed = get_1d_sincos_pos_embed_from_grid(config, grid)
+    return pos_embed.unsqueeze(0)
+
+
+def get_2d_sincos_pos_embed(config, length, interpolation_scale=1.0, base_size=16, device: Optional[torch.device] = None):
+    grid_size = int(length**0.5)
+    assert grid_size * grid_size == length
+    grid_h = (
+        torch.arange(grid_size, device=device, dtype=torch.float32)
+        / (grid_size / base_size)
+        / interpolation_scale
+    )
+    grid_w = (
+        torch.arange(grid_size, device=device, dtype=torch.float32)
+        / (grid_size / base_size)
+        / interpolation_scale
+    )
+    grid = torch.meshgrid(grid_w, grid_h, indexing="xy")
+    grid = torch.stack(grid, dim=0)
+
+    grid = grid.reshape([2, 1, grid_size, grid_size])
+    pos_embed = get_2d_sincos_pos_embed_from_grid(config, grid)
+    return pos_embed
+
+
+def get_2d_sincos_pos_embed_from_grid(config, grid):
+    assert config.n_emb % 2 == 0
+    # use half of dimensions to encode grid_h
+    emb_h = get_1d_sincos_pos_embed_from_grid(DiTConfig(n_emb=config.n_emb // 2), grid[0])  # (H*W, D/2)
+    emb_w = get_1d_sincos_pos_embed_from_grid(DiTConfig(n_emb=config.n_emb // 2), grid[1])  # (H*W, D/2)
+    emb = torch.cat([emb_h, emb_w], dim=1)  # (H*W, D)
+    return emb
+
+
+
 class TimestepEmbedder(nn.Module):
     def __init__(self, frequency_embedding_size=256):
         super().__init__()
@@ -84,59 +139,22 @@ class LabelEmbedder(nn.Module):
         embeddings = self.embedding_table(labels)
         return embeddings
 
+class PatchEmbed(nn.Module):
+    def __init__(self, config, in_channels=4, img_size: int = 32):
+        super().__init__()
+        self.dim = config.n_emb
+        self.patch_size = config.patch_size
+        self.num_patches = (img_size // self.patch_size) ** 2
+        self.proj = nn.Conv2d(
+            in_channels, config.n_emb, kernel_size=(self.patch_size, self.patch_size), 
+            stride=self.patch_size, bias=False
+        )
 
-
-def get_1d_sincos_pos_embed_from_grid(config, pos):
-    assert config.n_emb % 2 == 0
-    omega = torch.arange(config.n_emb // 2, dtype=torch.float32)
-    omega /= config.n_emb / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
-
-    pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
-
-    emb_sin = torch.sin(out)  # (M, D/2)
-    emb_cos = torch.cos(out)  # (M, D/2)
-
-    emb = torch.cat([emb_sin, emb_cos], dim=1)
-    return emb
-
-
-def get_1d_sincos_pos_embed(config, length):
-    grid = torch.arange(length, dtype=torch.float32)
-    pos_embed = get_1d_sincos_pos_embed_from_grid(config, grid)
-    return pos_embed.unsqueeze(0)
-
-
-def get_2d_sincos_pos_embed(config, length, interpolation_scale=1.0, base_size=16, device: Optional[torch.device] = None):
-    grid_size = int(length**0.5)
-    assert grid_size * grid_size == length
-    grid_h = (
-        torch.arange(grid_size, device=device, dtype=torch.float32)
-        / (grid_size / base_size)
-        / interpolation_scale
-    )
-    grid_w = (
-        torch.arange(grid_size, device=device, dtype=torch.float32)
-        / (grid_size / base_size)
-        / interpolation_scale
-    )
-    grid = torch.meshgrid(grid_w, grid_h, indexing="xy")
-    grid = torch.stack(grid, dim=0)
-
-    grid = grid.reshape([2, 1, grid_size, grid_size])
-    pos_embed = get_2d_sincos_pos_embed_from_grid(config, grid)
-    return pos_embed
-
-
-def get_2d_sincos_pos_embed_from_grid(config, grid):
-    assert config.n_emb % 2 == 0
-    # use half of dimensions to encode grid_h
-    emb_h = get_1d_sincos_pos_embed_from_grid(DiTConfig(n_emb=config.n_emb // 2), grid[0])  # (H*W, D/2)
-    emb_w = get_1d_sincos_pos_embed_from_grid(DiTConfig(n_emb=config.n_emb // 2), grid[1])  # (H*W, D/2)
-    emb = torch.cat([emb_h, emb_w], dim=1)  # (H*W, D)
-    return emb
-
+    def forward(self, x):
+        B, C, H, W = x.shape 
+        x = self.proj(x)  # (B, hidden_size, num_patches_side, num_patches_side)
+        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, hidden_size)
+        return x
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, config):
@@ -177,22 +195,6 @@ class MultiHeadAttention(nn.Module):
         return context_vector
 
 
-class PatchEmbed(nn.Module):
-    def __init__(self, config, in_channels=4, img_size: int = 32):
-        super().__init__()
-        self.dim = config.n_emb
-        self.patch_size = config.patch_size
-        self.num_patches = (img_size // self.patch_size) ** 2
-        self.proj = nn.Conv2d(
-            in_channels, config.n_emb, kernel_size=(self.patch_size, self.patch_size), 
-            stride=self.patch_size, bias=False
-        )
-
-    def forward(self, x):
-        B, C, H, W = x.shape 
-        x = self.proj(x)  # (B, hidden_size, num_patches_side, num_patches_side)
-        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, hidden_size)
-        return x
 
 
 class MLP(nn.Module):
@@ -236,8 +238,6 @@ class DiTBlock(nn.Module):
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.layernorm1(x), shift_msa, scale_msa))
         x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.layernorm2(x), shift_mlp, scale_mlp))
         return x
-
-
 
 
 class DiT(nn.Module):
