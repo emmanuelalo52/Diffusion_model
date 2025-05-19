@@ -4,8 +4,7 @@ import math
 from typing import Optional
 from dataclasses import dataclass
 
-# Label and timestep
-# From https://github.com/facebookresearch/DiT/blob/main/models.py
+
 
 @dataclass
 class DiTConfig:
@@ -77,7 +76,8 @@ def get_2d_sincos_pos_embed_from_grid(config, grid):
     emb = torch.cat([emb_h, emb_w], dim=1)  # (H*W, D)
     return emb
 
-
+# Label and timestep
+# From https://github.com/facebookresearch/DiT/blob/main/models.py
 
 class TimestepEmbedder(nn.Module):
     def __init__(self, frequency_embedding_size=256):
