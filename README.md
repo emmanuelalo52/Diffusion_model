@@ -111,10 +111,6 @@ python scripts/img2img.py \
 > [!IMPORTANT]  
 > Always use EMA weights during inference if available. Make sure that training and sampling configs match.
 
-## 📄 License
-
-Specify the license (e.g., MIT, Apache‑2.0, CreativeML Open RAIL‑M). Users must comply with any usage restrictions.
-
 ## 📚 References
 
 - Rombach et al., *High‑Resolution Image Synthesis with Latent Diffusion Models*, CVPR 2022  
@@ -122,15 +118,4 @@ Specify the license (e.g., MIT, Apache‑2.0, CreativeML Open RAIL‑M). Users m
 
 ## 📧 Contact & Citation
 
-For questions or feedback, please open an issue or email: **emmanuel**@example.com
-
-If you use this project, please cite:
-
-```bibtex
-@article{your2025diffusion,
-  title={Your Title Here},
-  author={Alo, Emmanuel and ...},
-  year={2025},
-  journal={arXiv preprint arXiv:xxxx.yyyy}
-}
-```
+For questions or feedback, please open an issue or email: **emmanuelalo52**@gmail.com
